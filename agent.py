@@ -4,7 +4,15 @@ from flask import Flask, request, jsonify
 from threading import Lock
 from collections import deque
 
-from case_closed_game import Game, Direction, GameResult
+from case_closed_game import Game, Direction, GameResult, AGENT
+
+import numpy
+import random
+import torch
+from model import Linear_QNet, QTrainer
+from helper import plot
+
+
 
 # Flask API server setup
 app = Flask(__name__)
@@ -98,15 +106,159 @@ def send_move():
     # -----------------your code here-------------------
     # Simple example: always go RIGHT (replace this with your logic)
     # To use a boost: move = "RIGHT:BOOST"
-    move = "RIGHT"
+
     
+    MAX_MEMORY = 100_000
+    BATCH_SIZE = 1000
+    LR = 0.001
+
+    class Agent:
+
+        def __init__(self):
+            self.n_games = 0
+            self.epsilon = 0 # randomness
+            self.gamma = 0.9 # discount rate (smaller than 1)
+            self.memory = deque(maxlen=MAX_MEMORY) # popleft()
+            self.model = Linear_QNet(7, 256, 3)
+            self.trainer = QTrainer(self.model, lr=LR, gamma=self.gamma)
+
+        def get_state(self, game):
+            head = Agent.agent1.trail[-1]
+            point_left = (head[0] - 1, head[1])
+            point_right = (head[0] + 1, head[1])
+            point_up = (head[0], head[1] - 1)
+            point_down = (head[0], head[1] + 1)
+
+            dir_left = Agent.agent1.direction == Direction.LEFT
+            dir_right = Agent.agent1.direction == Direction.RIGHT
+            dir_up = Agent.agent1.direction == Direction.UP
+            dir_down = Agent.agent1.direction == Direction.DOWN
+
+            # Helper function to check collision using available Game methods
+            def is_collision(point):
+                return game.board.get_cell_state(point) == AGENT
+
+            state = [
+                # Danger straight
+                (dir_right and is_collision(point_right)) or
+                (dir_left and is_collision(point_left)) or
+                (dir_up and is_collision(point_up)) or
+                (dir_down and is_collision(point_down)) or
+
+                # Danger right
+                (dir_down and is_collision(point_right)) or
+                (dir_up and is_collision(point_left)) or
+                (dir_right and is_collision(point_down)) or
+                (dir_left and is_collision(point_up)) or
+
+                # Danger left
+                (dir_up and is_collision(point_right)) or
+                (dir_down and is_collision(point_left)) or
+                (dir_left and is_collision(point_up)) or
+                (dir_right and is_collision(point_down)) or
+
+                # Move direction
+                dir_left,
+                dir_right,
+                dir_up,
+                dir_down
+            ]
+            
+            return numpy.array(state, dtype=int)
+
+        def remember(self, state, action, reward, next_state, done):
+            self.memory.append((state, action, reward, next_state, done)) # popleft if max_memory is reached
+
+
+        def train_long_memory(self):
+            if len(self.memory) > BATCH_SIZE:
+                mini_sample = random.sample(self.memory, BATCH_SIZE) # list of tuples
+            else:
+                mini_sample = self.memory
+
+
+            states, actions, rewards, next_states, done = zip(*mini_sample)
+            self.trainer.train_step(states, actions, rewards, next_states, done)
+
+        
+
+        
+        def train_short_memory(self, state, action, reward, next_state, done):
+            self.trainer.train_step(state, action, reward, next_state, done)
+        
+        def get_action(self, state):
+            # random moves: tradeoff exploration / exploitation
+
+            self.epsilon = 80 - self.n_games
+            final_move = [0, 0, 0]
+            if random.randint(0, 200) < self.epsilon:
+                move = random.randint(0, 2)
+                final_move[move] = 1
+            else:
+                state0 = torch.tensor(state, dtype=torch.float)
+                prediction = self.model(state0)
+                move = torch.argmax(prediction).item()
+                final_move[move] = 1
+            
+            return final_move
+            
+    return jsonify({"move": move}), 200
+
+
+
+def train():
+    plot_scores = []
+    plot_mean_scores = []
+    total_score = 0
+    record = 0
+    agent = Agent()
+    game = Game()
+
+    while True:
+        # get old state
+        old_state = agent.get_state(game)
+
+        # get move
+        final_move = agent.get_action(old_state)
+
+        # perform move and get new state
+        reward, done, score = game.step(final_move)
+        new_state = agent.get_state(game)
+
+        # train short memort
+        agent.train_short_memory(old_state, final_move, reward, new_state, done)
+
+        # train long memory
+        agent.train_long_memory(old_state, final_move, reward, new_state, done)
+
+        if done:
+            # train long memory, plot result
+            game.reset()
+            agent.n_games += 1
+            agent.train_long_memory()
+
+            if score > record:
+                record = score
+                agent.model.save()
+
+            print('Game', agent.n_games, 'Score', 'Record', record)
+            
+            plot_scores.append(score)
+            total_score += score
+            mean_score = total_score / agent.n_games
+            plot_mean_scores.append(mean_score)
+            plot(plot_scores, plot_mean_scores)
+
+
     # Example: Use boost if available and it's late in the game
     # turn_count = state.get("turn_count", 0)
     # if boosts_remaining > 0 and turn_count > 50:
     #     move = "RIGHT:BOOST"
     # -----------------end code here--------------------
 
-    return jsonify({"move": move}), 200
+    
+
+
 
 
 @app.route("/end", methods=["POST"])
