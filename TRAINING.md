@@ -50,7 +50,7 @@ You can modify these in `train.py`:
 ### Reward System
 
 The model learns from these rewards:
-- **+0.1**: Staying alive each turn
+- **+1**: Staying alive each turn
 - **+0.5 per cell**: Growing longer (length increase)
 - **+100**: Winning the game
 - **-50**: Losing the game
@@ -70,8 +70,7 @@ The neural network has:
 1. **More Episodes = Better Performance**: Start with 500 episodes, increase to 1000-5000 for better results
 2. **Monitor Progress**: Watch the win rate and average reward increase over time
 3. **Save Checkpoints**: Models are saved every 50 episodes (configurable)
-4. **GPU Acceleration**: If you have a GPU, PyTorch will automatically use it
-5. **Adjust Learning Rate**: If training is unstable, try lower learning rates (0.0001)
+4. **Adjust Learning Rate**: If training is unstable, try lower learning rates (0.0001)
 
 ## Using the Trained Model
 

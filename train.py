@@ -2,7 +2,7 @@
 Training script for Case Closed agent using Deep Q-Network (DQN) reinforcement learning.
 
 This script trains a neural network to play the Case Closed game by:
-1. Playing games against itself or a random opponent
+1. Playing games against the sample agent (sample_agent.py)
 2. Collecting experience (state, action, reward, next_state)
 3. Training the model using Q-learning
 4. Saving the trained model for use in agent.py
@@ -184,6 +184,109 @@ def action_to_direction(action):
         return Direction.DOWN
 
 
+def decide_move_sample_agent(my_trail, other_trail, turn_count, my_boosts):
+    """Sample agent decision logic (extracted from sample_agent.py).
+    
+    Strategy:
+    - Move in a direction that doesn't immediately hit a trail
+    - Use boost if we have them and it's mid-game (turns 30-80)
+    """
+    if not my_trail:
+        return "RIGHT"
+    
+    # Get current head position and direction
+    head = my_trail[-1] if my_trail else (0, 0)
+    
+    # Calculate current direction if we have at least 2 positions
+    current_dir = "RIGHT"
+    if len(my_trail) >= 2:
+        prev = my_trail[-2]
+        dx = head[0] - prev[0]
+        dy = head[1] - prev[1]
+        
+        # Normalize for torus wrapping
+        if abs(dx) > 1:
+            dx = -1 if dx > 0 else 1
+        if abs(dy) > 1:
+            dy = -1 if dy > 0 else 1
+        
+        if dx == 1:
+            current_dir = "RIGHT"
+        elif dx == -1:
+            current_dir = "LEFT"
+        elif dy == 1:
+            current_dir = "DOWN"
+        elif dy == -1:
+            current_dir = "UP"
+    
+    # Simple strategy: try to avoid trails, prefer continuing straight
+    # Check available directions (not opposite to current)
+    directions = ["UP", "DOWN", "LEFT", "RIGHT"]
+    opposite = {"UP": "DOWN", "DOWN": "UP", "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    
+    # Remove opposite direction
+    if current_dir in opposite:
+        try:
+            directions.remove(opposite[current_dir])
+        except ValueError:
+            pass
+    
+    # Prefer current direction if still available
+    if current_dir in directions:
+        chosen_dir = current_dir
+    else:
+        # Pick first available
+        chosen_dir = directions[0] if directions else "RIGHT"
+    
+    # Decide whether to use boost
+    # Use boost in mid-game when we still have them
+    use_boost = my_boosts > 0 and 30 <= turn_count <= 80
+    
+    if use_boost:
+        return f"{chosen_dir}:BOOST"
+    else:
+        return chosen_dir
+
+
+def get_sample_agent_action(game, player_number):
+    """Get action from sample agent for the given player."""
+    # Get trails
+    if player_number == 1:
+        my_trail = list(game.agent1.trail)
+        other_trail = list(game.agent2.trail)
+        my_boosts = game.agent1.boosts_remaining
+    else:
+        my_trail = list(game.agent2.trail)
+        other_trail = list(game.agent1.trail)
+        my_boosts = game.agent2.boosts_remaining
+    
+    # Convert trails to list of tuples (sample_agent expects lists)
+    my_trail_list = [(pos[0], pos[1]) for pos in my_trail]
+    other_trail_list = [(pos[0], pos[1]) for pos in other_trail]
+    
+    # Get move decision from sample agent
+    move_str = decide_move_sample_agent(my_trail_list, other_trail_list, game.turns, my_boosts)
+    
+    # Parse move string (format: "DIRECTION" or "DIRECTION:BOOST")
+    if ":BOOST" in move_str:
+        direction_str = move_str.split(":")[0]
+        use_boost = True
+    else:
+        direction_str = move_str
+        use_boost = False
+    
+    # Convert string direction to Direction enum
+    direction_map = {
+        "UP": Direction.UP,
+        "DOWN": Direction.DOWN,
+        "LEFT": Direction.LEFT,
+        "RIGHT": Direction.RIGHT
+    }
+    
+    direction = direction_map.get(direction_str, Direction.RIGHT)
+    return direction, use_boost
+
+
 def random_action():
     """Get a random action."""
     return random.randint(0, 3)
@@ -207,7 +310,7 @@ def train_dqn(num_episodes=1000, batch_size=64, learning_rate=0.001,
         save_interval: Save model every N episodes
     """
     # Initialize models
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")  # Force CPU-only execution
     print(f"Using device: {device}")
     
     state_size = 11
@@ -256,12 +359,11 @@ def train_dqn(num_episodes=1000, batch_size=64, learning_rate=0.001,
             action = get_action_from_model(model, state, epsilon)
             direction = action_to_direction(action)
             
-            # Get opponent action (random for training)
-            opp_action = random_action()
-            opp_direction = action_to_direction(opp_action)
+            # Get opponent action from sample agent
+            opp_direction, opp_boost = get_sample_agent_action(game, player_number=2)
             
             # Execute moves
-            game_result = game.step(direction, opp_direction, boost1=False, boost2=False)
+            game_result = game.step(direction, opp_direction, boost1=False, boost2=opp_boost)
             
             # Calculate reward
             reward = get_reward(game, game.agent1, player_number, game_result, prev_length, prev_alive)
@@ -357,7 +459,7 @@ def train_dqn(num_episodes=1000, batch_size=64, learning_rate=0.001,
 
 if __name__ == "__main__":
     # Training parameters
-    NUM_EPISODES = 1000000000  # Training for 10,000 episodes for better performance
+    NUM_EPISODES = 1000000  # Training for 10,000 episodes for better performance
     BATCH_SIZE = 64
     LEARNING_RATE = 0.001
     EPSILON_START = 1.0
@@ -376,7 +478,7 @@ if __name__ == "__main__":
         epsilon_start=EPSILON_START,
         epsilon_end=EPSILON_END,
         epsilon_decay=EPSILON_DECAY,
-        save_interval= 500000  # Save every 500 episodes for long training runs
+        save_interval= 100000  # Save every 500 episodes for long training runs
     )
     
     print("\nTraining finished! Use the saved model in agent.py")
